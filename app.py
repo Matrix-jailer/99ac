@@ -647,6 +647,19 @@ async def detect_technologies(url: str, max_retries: int = 2) -> Dict[str, List[
                 return {"url": url, "technologies": [], "error": str(e)}
             await asyncio.sleep(2)  # Wait before retry
 
+from playwright.async_api import async_playwright
+
+async def connect_browser():
+    browser_ws = "wss://brd-customer-hl_55395c6c-zone-residential_proxy1:yv8ient65hzb@brd.superproxy.io:9222"
+    logger.info("Attempt 1: Connecting to Bright Data Browser API")
+    try:
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.connect_over_cdp(browser_ws)
+        return browser
+    except Exception as e:
+        logger.error(f"Failed to connect to Bright Data Browser API: {e}")
+        raise
+
 async def detect_technologies_with_checkout(url: str):
     logger.info(f"Starting technology detection for URL: {url}")
     try:
@@ -657,7 +670,6 @@ async def detect_technologies_with_checkout(url: str):
         await page.goto(url, timeout=30000)
         logger.info(f"Page loaded successfully with status: {page.status if hasattr(page, 'status') else 'unknown'}")
 
-        # JS globals check FIRST before any clicks
         if page.is_closed():
             logger.error("Page was closed before JS evaluation.")
             return {"url": url, "technologies": [], "error": "Page closed early"}
@@ -695,6 +707,7 @@ async def detect_technologies_with_checkout(url: str):
     except Exception as e:
         logger.error(f"Detection failed for {url}: {e}")
         return {"url": url, "technologies": [], "error": str(e)}
+
 
 
     # Add original URL to check

@@ -647,67 +647,55 @@ async def detect_technologies(url: str, max_retries: int = 2) -> Dict[str, List[
                 return {"url": url, "technologies": [], "error": str(e)}
             await asyncio.sleep(2)  # Wait before retry
 
-async def detect_technologies_with_checkout(url: str) -> DetectionResponse:
-    """Detect technologies on the main URL and potential checkout pages concurrently."""
-    logger.info(f"Processing URL with checkout detection: {url}")
+async def detect_technologies_with_checkout(url: str):
+    logger.info(f"Starting technology detection for URL: {url}")
+    try:
+        browser = await connect_browser()
+        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        page = await context.new_page()
 
-    # Get potential checkout URLs from sitemap
-    checkout_urls = await find_checkout_urls(url)
-    checkout_urls = [u for u in checkout_urls if u.startswith(("http://", "https://"))]
-    if not checkout_urls:
-        logger.info("No checkout URLs found in sitemap, trying link analysis")
+        await page.goto(url, timeout=30000)
+        logger.info(f"Page loaded successfully with status: {page.status if hasattr(page, 'status') else 'unknown'}")
 
-        # Fallback to link analysis on homepage
-        async with async_playwright() as p:
-            logger.info("Connecting to Bright Data Browser API for link analysis")
-            browser = await p.chromium.connect_over_cdp(
-                "wss://brd-customer-hl_55395c6c-zone-residential_proxy1:yv8ient65hzb@brd.superproxy.io:9222"
-            )
-            context = await browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent=ua.random,
-                extra_http_headers={
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.5",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "Connection": "keep-alive",
-                    "Upgrade-Insecure-Requests": "1",
-                },
-            )
-            await stealth_async(context)
-            page = await context.new_page()
-            await page.evaluate("""
-                () => {
-                    const originalGetContext = HTMLCanvasElement.prototype.getContext;
-                    HTMLCanvasElement.prototype.getContext = function(contextType, contextAttributes) {
-                        if (contextType === '2d') {
-                            const ctx = originalGetContext.apply(this, arguments);
-                            ctx.fillStyle = ctx.fillStyle + String(Math.random()).slice(2, 8);
-                            return ctx;
-                        }
-                        return originalGetContext.apply(this, arguments);
-                    };
-                }
-            """)
+        # JS globals check FIRST before any clicks
+        if page.is_closed():
+            logger.error("Page was closed before JS evaluation.")
+            return {"url": url, "technologies": [], "error": "Page closed early"}
 
-            try:
-                await page.goto(url, timeout=45000, wait_until="networkidle")
-                links = await page.locator("a, button, input[type='submit']").all()
-                checkout_urls = [
-                    await link.get_attribute("href") or await link.evaluate("el => el.form?.action")
-                    for link in links
-                    if await link.inner_text() and re.search(
-                        r"buy|pricing|subscribe|checkout|cart|order|payment",
-                        (await link.inner_text()).lower(),
-                        re.IGNORECASE
-                    )
-                ]
-                checkout_urls = [u for u in checkout_urls if u and u.startswith(("http://", "https://"))]
-                logger.info(f"Found {len(checkout_urls)} checkout URLs via link analysis: {checkout_urls}")
-                await browser.close()
-            except Exception as e:
-                logger.error(f"Error in link analysis for {url}: {str(e)}")
-                await browser.close()
+        try:
+            js_globals = await page.evaluate("""() => Object.keys(window).filter(k => typeof window[k] === 'object' || typeof window[k] === 'function')""")
+        except Exception as e:
+            logger.error(f"JS evaluation failed: {e}")
+            js_globals = []
+
+        logger.info("Simulating human-like interactions")
+        await simulate_scroll(page)
+        await simulate_mouse_movement(page)
+
+        logger.info("Attempting to click checkout-related links")
+        await try_checkout_clicks(page)
+
+        logger.info("Extracting potential checkout links/buttons")
+        checkout_urls = await extract_checkout_links(page)
+
+        logger.info("Extracting page content")
+        content = await page.content()
+
+        techs = scan_technologies(content, js_globals)
+        result = {
+            "url": url,
+            "technologies": techs,
+            "checkout_links": checkout_urls
+        }
+
+        await page.close()
+        await browser.close()
+        return result
+
+    except Exception as e:
+        logger.error(f"Detection failed for {url}: {e}")
+        return {"url": url, "technologies": [], "error": str(e)}
+
 
     # Add original URL to check
     all_urls = [url] + checkout_urls[:2]  # Limit to 2 checkout URLs for speed

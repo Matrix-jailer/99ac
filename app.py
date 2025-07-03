@@ -9,8 +9,11 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 import logging
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging with more detailed format
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 # Define technology fingerprints (payment gateways + e-commerce platforms)
@@ -400,9 +403,11 @@ async def detect_technologies(url: str) -> Dict[str, List[str]]:
     """
     Detect payment gateways, e-commerce platforms, and protections using Playwright Stealth.
     """
+    logger.info(f"Starting technology detection for URL: {url}")  # Logger 1
     technologies = []
     try:
         async with async_playwright() as p:
+            logger.info("Launching Playwright Chromium browser")  # Logger 2
             # Launch browser with stealth settings
             browser = await p.chromium.launch(
                 headless=True,
@@ -421,30 +426,40 @@ async def detect_technologies(url: str) -> Dict[str, List[str]]:
             page = await context.new_page()
 
             # Navigate to URL
+            logger.info(f"Navigating to {url}")  # Logger 3
             response = await page.goto(url, timeout=30000, wait_until="domcontentloaded")
             if not response or response.status >= 400:
                 raise Exception(f"Failed to load URL: {response.status if response else 'No response'}")
+            logger.info(f"Page loaded successfully with status: {response.status}")  # Logger 4
 
             # Get page content
+            logger.info("Extracting page content")  # Logger 5
             html = await page.content()
             soup = BeautifulSoup(html, "html.parser")
 
             # Extract script sources
+            logger.info("Extracting script sources")  # Logger 6
             script_urls = [
                 script.get("src", "") for script in soup.find_all("script") if script.get("src")
             ]
+            logger.info(f"Found {len(script_urls)} script URLs: {script_urls}")  # Logger 7
 
             # Extract inline scripts
+            logger.info("Extracting inline scripts")  # Logger 8
             inline_scripts = [
                 script.string for script in soup.find_all("script") if script.string
             ]
+            logger.info(f"Found {len(inline_scripts)} inline scripts")  # Logger 9
 
             # Extract data attributes
+            logger.info("Extracting data attributes")  # Logger 10
             data_attrs = [
                 attr for elem in soup.find_all(True) for attr in elem.attrs if attr.startswith("data-")
             ]
+            logger.info(f"Found {len(data_attrs)} data attributes: {data_attrs}")  # Logger 11
 
             # Evaluate JavaScript globals in browser context
+            logger.info("Evaluating JavaScript globals")  # Logger 12
             js_globals = await page.evaluate("""
                 () => {
                     return {
@@ -471,13 +486,18 @@ async def detect_technologies(url: str) -> Dict[str, List[str]]:
                     };
                 }
             """)
+            logger.info(f"JavaScript globals evaluation result: {js_globals}")  # Logger 13
 
             # Combine all content to scan
+            logger.info("Combining content for pattern matching")  # Logger 14
             all_content = (
                 html + " ".join(script_urls) + " ".join(inline_scripts) + " ".join(data_attrs)
             )
+            logger.info(f"Total content length: {len(all_content)} characters")  # Logger 15
 
             # Scan for technologies
+            logger.info("Scanning for technologies")  # Logger 16
+            matched_patterns = []
             for tech, patterns in TECH_PATTERNS.items():
                 if any(pattern.search(all_content) for pattern in patterns):
                     technologies.append(tech)
@@ -522,14 +542,19 @@ async def detect_technologies(url: str) -> Dict[str, List[str]]:
                     technologies.append(tech)
                 elif tech == "Shopify" and js_globals.get("hasShopify"):
                     technologies.append(tech)
+                logger.info(f"Matched patterns: {matched_patterns}")  # Logger 17
+                logger.info(f"Detected technologies: {technologies}")  # Logger 18
 
             # Remove duplicates
             technologies = list(set(technologies))
+            logger.info(f"Final unique technologies: {technologies}")  # Logger 19
 
             await browser.close()
+            logger.info(f"Browser closed for {url}")  # Logger 20
             return {"url": url, "technologies": technologies, "error": None}
-
+            
     except Exception as e:
+        logger.error(f"Error processing {url}: {str(e)}")  # Logger 21
         logger.error(f"Error processing {url}: {str(e)}")
         return {"url": url, "technologies": [], "error": str(e)}
 
@@ -540,26 +565,38 @@ async def gatecheck(url: str):
     Example: /gatecheck/?url=https://example.com
     """
     # Validate URL
+    logger.info(f"Received gatecheck request for URL: {url}")  # Logger 22
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+        logger.info(f"Added https:// to URL: {url}")  # Logger 23
     parsed_url = urlparse(url)
+    logger.info(f"Parsed URL: scheme={parsed_url.scheme}, netloc={parsed_url.netloc}")  # Logger 24
     if not parsed_url.scheme or not parsed_url.netloc:
+        logger.warning(f"Invalid URL provided: {url}")  # Logger 25
         raise HTTPException(status_code=400, detail="Invalid URL provided")
 
     # Run detection
     result = await detect_technologies(url)
+    logger.info(f"Gatecheck result for {url}: {result}")  # Logger 26
     return DetectionResponse(**result)
 @app.get("/")
 async def root():
+    logger.info("Received request to root endpoint")  # Logger 27
     return {"message": "Welcome to the Payment Gateway & E-Commerce Detector API. Use /gatecheck/?url=<your_url> to detect technologies."}
 
 from fastapi.responses import FileResponse
 
 @app.get("/favicon.ico")
 async def favicon():
-    # Return an empty response or a favicon file if you have one
-    return FileResponse("path/to/favicon.ico") if os.path.exists("path/to/favicon.ico") else {}
+    logger.info("Received request for favicon.ico")  # Logger 28
+    favicon_path = "favicon.ico"
+    if os.path.exists(favicon_path):
+        logger.info(f"Serving favicon from {favicon_path}")  # Logger 29
+        return FileResponse(favicon_path)
+    logger.info("No favicon found, returning 204 No Content")  # Logger 30
+    return Response(status_code=204)
 
 if __name__ == "__main__":
+    logger.info("Starting Uvicorn server locally")  # Logger 31
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

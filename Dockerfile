@@ -35,5 +35,5 @@ EXPOSE 8000
 # Set environment variable for port
 ENV PORT=8000
 
-# Start the app with Uvicorn, using --no-sandbox for Playwright
+# Start the app with Uvicorn
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

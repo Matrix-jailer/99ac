@@ -433,7 +433,7 @@ async def detect_technologies(url: str, max_retries: int = 2) -> Dict[str, List[
             async with async_playwright() as p:
                 logger.info(f"Attempt {attempt + 1}: Connecting to Bright Data Browser API")
                 browser = await p.chromium.connect_over_cdp(
-                    "wss://brd-customer-YOUR_CUSTOMER_ID-zone-YOUR_ZONE_NAME:YOUR_ZONE_PASSWORD@brd.superproxy.io:9222"
+                    "wss://brd-customer-hl_55395c6c-zone-residential_proxy1:yv8ient65hzb@brd.superproxy.io:9222"
                 )
                 context = await browser.new_context(
                     viewport={"width": 1920, "height": 1080},
@@ -618,7 +618,7 @@ async def detect_technologies_with_checkout(url: str) -> DetectionResponse:
         # Fallback to link analysis on homepage
         async with async_playwright() as p:
             browser = await p.chromium.connect_over_cdp(
-                "wss://brd-customer-YOUR_CUSTOMER_ID-zone-YOUR_ZONE_NAME:YOUR_ZONE_PASSWORD@brd.superproxy.io:9222"
+                "wss://brd-customer-hl_55395c6c-zone-residential_proxy1:yv8ient65hzb@brd.superproxy.io:9222"
             )
             context = await browser.new_context(
                 viewport={"width": 1920, "height": 1080},

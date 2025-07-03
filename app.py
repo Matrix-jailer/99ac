@@ -431,14 +431,12 @@ async def detect_technologies(url: str, max_retries: int = 2) -> Dict[str, List[
     for attempt in range(max_retries):
         try:
             async with async_playwright() as p:
-                logger.info(f"Attempt {attempt + 1}: Launching Playwright Chromium browser")
-                browser = await p.chromium.launch(headless=True)
+                logger.info(f"Attempt {attempt + 1}: Connecting to Bright Data Browser API")
+                browser = await p.chromium.connect_over_cdp(
+                    "wss://brd-customer-YOUR_CUSTOMER_ID-zone-YOUR_ZONE_NAME:YOUR_ZONE_PASSWORD@brd.superproxy.io:9222"
+                )
                 context = await browser.new_context(
-                    proxy={
-                        "server": "http://YOUR_BRIGHTDATA_HOST:YOUR_BRIGHTDATA_PORT",
-                        "username": "YOUR_BRIGHTDATA_USERNAME",
-                        "password": "YOUR_BRIGHTDATA_PASSWORD",
-                    },
+                    viewport={"width": 1920, "height": 1080},
                     user_agent=ua.random,
                     extra_http_headers={
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -448,6 +446,7 @@ async def detect_technologies(url: str, max_retries: int = 2) -> Dict[str, List[
                         "Upgrade-Insecure-Requests": "1",
                     },
                 )
+
                 await stealth_async(context)
                 page = await context.new_page()
 

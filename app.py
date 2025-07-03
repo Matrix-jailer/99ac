@@ -1,25 +1,31 @@
-import os
 import asyncio
 import re
-from fastapi.responses import FileResponse, Response  # Add Response here
+import os
+import random
 from typing import List, Dict, Optional
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
 from playwright_stealth import stealth_async
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 import logging
+import requests
+import xml.etree.ElementTree as ET
+from fake_useragent import UserAgent
 
-# Configure logging with more detailed format
+# Configure logging with detailed format
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Define technology fingerprints (payment gateways + e-commerce platforms)
+# Initialize fake user agent for randomization
+ua = UserAgent()
 
+# Define technology fingerprints (partial, as requested)
 TECH_PATTERNS = {
     "Stripe": [
         re.compile(r"js\.stripe\.com", re.IGNORECASE),
@@ -401,164 +407,284 @@ class DetectionResponse(BaseModel):
     technologies: List[str]
     error: Optional[str] = None
 
-async def detect_technologies(url: str) -> Dict[str, List[str]]:
-    """
-    Detect payment gateways, e-commerce platforms, and protections using Playwright Stealth.
-    """
-    logger.info(f"Starting technology detection for URL: {url}")  # Logger 1
-    technologies = []
+async def find_checkout_urls(base_url: str) -> List[str]:
+    """Parse sitemap.xml and extract potential checkout/product URLs."""
+    logger.info(f"Fetching sitemap for {base_url}")
     try:
+        response = requests.get(f"{base_url}/sitemap.xml", timeout=10)
+        response.raise_for_status()
+        root = ET.fromstring(response.content)
+        checkout_urls = [
+            loc.text for loc in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
+            if re.search(r"/(order|checkout|pricing|buy|subscribe|cart|payment)/", loc.text, re.IGNORECASE)
+        ]
+        logger.info(f"Found {len(checkout_urls)} potential checkout URLs: {checkout_urls}")
+        return checkout_urls
+    except Exception as e:
+        logger.error(f"Error fetching sitemap for {base_url}: {str(e)}")
+        return []
+
+async def detect_technologies(url: str, max_retries: int = 2) -> Dict[str, List[str]]:
+    """Detect payment gateways and e-commerce platforms with retries and human-like behavior."""
+    logger.info(f"Starting technology detection for URL: {url}")
+    technologies = []
+    for attempt in range(max_retries):
+        try:
+            async with async_playwright() as p:
+                logger.info(f"Attempt {attempt + 1}: Launching Playwright Chromium browser")
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-infobars",
+                        "--window-size=1920,1080",
+                    ],
+                )
+                # Configure Bright Data residential proxy (add credentials later)
+                context = await browser.new_context(
+                    proxy={
+                        "server": "http://brd.superproxy.io:3333",  # e.g., "http://zproxy.lum-superproxy.io:22225"
+                        "username": "brd-customer-hl_55395c6c-zone-residential_proxy2",
+                        "password": "q98c7nkfwok4",
+                    },
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent=ua.random,  # Randomize user agent
+                    extra_http_headers={
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.5",
+                        "Accept-Encoding": "gzip, deflate, br",
+                        "Connection": "keep-alive",
+                        "Upgrade-Insecure-Requests": "1",
+                    },  # Mimic browser headers
+                )
+                await stealth_async(context)
+                page = await context.new_page()
+
+                # Human-like navigation
+                logger.info(f"Navigating to {url}")
+                response = await page.goto(url, timeout=30000, wait_until="networkidle")
+                if not response or response.status >= 400:
+                    raise Exception(f"Failed to load URL: {response.status if response else 'No response'}")
+                logger.info(f"Page loaded successfully with status: {response.status}")
+
+                # Simulate human behavior
+                logger.info("Simulating human-like interactions")
+                await page.mouse.move(random.randint(100, 800), random.randint(100, 600))
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await page.wait_for_timeout(random.randint(500, 1500))  # Random delay
+
+                # Check for checkout links/buttons
+                logger.info("Extracting potential checkout links/buttons")
+                links = await page.locator("a, button, input[type='submit']").all()
+                checkout_links = [
+                    await link.get_attribute("href") or await link.evaluate("el => el.form?.action")
+                    for link in links
+                    if await link.inner_text() and re.search(
+                        r"buy|pricing|subscribe|checkout|cart|order|payment",
+                        (await link.inner_text()).lower(),
+                        re.IGNORECASE
+                    )
+                ]
+                checkout_links = [link for link in checkout_links if link]
+                logger.info(f"Found {len(checkout_links)} potential checkout links: {checkout_links}")
+
+                # Get page content
+                logger.info("Extracting page content")
+                html = await page.content()
+                soup = BeautifulSoup(html, "html.parser")
+
+                # Extract script sources
+                logger.info("Extracting script sources")
+                script_urls = [
+                    script.get("src", "") for script in soup.find_all("script") if script.get("src")
+                ]
+                logger.info(f"Found {len(script_urls)} script URLs: {script_urls}")
+
+                # Extract inline scripts
+                logger.info("Extracting inline scripts")
+                inline_scripts = [
+                    script.string for script in soup.find_all("script") if script.string
+                ]
+                logger.info(f"Found {len(inline_scripts)} inline scripts")
+
+                # Extract data attributes
+                logger.info("Extracting data attributes")
+                data_attrs = [
+                    attr for elem in soup.find_all(True) for attr in elem.attrs if attr.startswith("data-")
+                ]
+                logger.info(f"Found {len(data_attrs)} data attributes: {data_attrs}")
+
+                # Evaluate JavaScript globals
+                logger.info("Evaluating JavaScript globals")
+                js_globals = await page.evaluate("""
+                    () => {
+                        return {
+                            hasStripe: typeof Stripe !== 'undefined',
+                            hasPayPal: typeof paypal !== 'undefined',
+                            hasRazorpay: typeof Razorpay !== 'undefined',
+                            hasBraintree: typeof braintree !== 'undefined',
+                            hasAdyen: typeof AdyenCheckout !== 'undefined',
+                            hasAuthorizeNet: typeof Accept !== 'undefined',
+                            hasSquare: typeof Square !== 'undefined',
+                            hasKlarna: typeof Klarna !== 'undefined',
+                            hasCheckoutCom: typeof Checkout !== 'undefined',
+                            hasPaytm: typeof Paytm !== 'undefined',
+                            hasShopifyPayments: typeof Shopify !== 'undefined',
+                            hasWorldpay: typeof Worldpay !== 'undefined',
+                            has2Checkout: typeof TwoCheckout !== 'undefined',
+                            hasAmazonPay: typeof amazon !== 'undefined',
+                            hasApplePay: typeof ApplePaySession !== 'undefined',
+                            hasGooglePay: typeof window.google === 'undefined' ? false : typeof google.payments?.api !== 'undefined',
+                            hasMollie: typeof Mollie !== 'undefined',
+                            hasOpayo: typeof Opayo !== 'undefined',
+                            hasPaddle: typeof Paddle !== 'undefined',
+                            hasShopify: typeof Shopify !== 'undefined',
+                        };
+                    }
+                """)
+                logger.info(f"JavaScript globals evaluation result: {js_globals}")
+
+                # Combine content for pattern matching
+                logger.info("Combining content for pattern matching")
+                all_content = (
+                    html + " ".join(script_urls) + " ".join(inline_scripts) + " ".join(data_attrs)
+                )
+                logger.info(f"Total content length: {len(all_content)} characters")
+
+                # Scan for technologies
+                logger.info("Scanning for technologies")
+                matched_patterns = []
+                for tech, patterns in TECH_PATTERNS.items():
+                    for pattern in patterns:
+                        if pattern.search(all_content):
+                            technologies.append(tech)
+                            matched_patterns.append(f"{tech}: {pattern.pattern}")
+                    if tech == "Stripe" and js_globals.get("hasStripe"):
+                        technologies.append(tech)
+                    elif tech == "PayPal" and js_globals.get("hasPayPal"):
+                        technologies.append(tech)
+                    elif tech == "Razorpay" and js_globals.get("hasRazorpay"):
+                        technologies.append(tech)
+                    elif tech == "Braintree" and js_globals.get("hasBraintree"):
+                        technologies.append(tech)
+                    elif tech == "Adyen" and js_globals.get("hasAdyen"):
+                        technologies.append(tech)
+                    elif tech == "Authorize.Net" and js_globals.get("hasAuthorizeNet"):
+                        technologies.append(tech)
+                    elif tech == "Square" and js_globals.get("hasSquare"):
+                        technologies.append(tech)
+                    elif tech == "Klarna" and js_globals.get("hasKlarna"):
+                        technologies.append(tech)
+                    elif tech == "Checkout.com" and js_globals.get("hasCheckoutCom"):
+                        technologies.append(tech)
+                    elif tech == "Paytm" and js_globals.get("hasPaytm"):
+                        technologies.append(tech)
+                    elif tech == "Shopify Payments" and js_globals.get("hasShopifyPayments"):
+                        technologies.append(tech)
+                    elif tech == "Worldpay" and js_globals.get("hasWorldpay"):
+                        technologies.append(tech)
+                    elif tech == "2Checkout" and js_globals.get("has2Checkout"):
+                        technologies.append(tech)
+                    elif tech == "Amazon Pay" and js_globals.get("hasAmazonPay"):
+                        technologies.append(tech)
+                    elif tech == "Apple Pay" and js_globals.get("hasApplePay"):
+                        technologies.append(tech)
+                    elif tech == "Google Pay" and js_globals.get("hasGooglePay"):
+                        technologies.append(tech)
+                    elif tech == "Mollie" and js_globals.get("hasMollie"):
+                        technologies.append(tech)
+                    elif tech == "Opayo" and js_globals.get("hasOpayo"):
+                        technologies.append(tech)
+                    elif tech == "Paddle" and js_globals.get("hasPaddle"):
+                        technologies.append(tech)
+                    elif tech == "Shopify" and js_globals.get("hasShopify"):
+                        technologies.append(tech)
+                    logger.info(f"Matched patterns for {tech}: {matched_patterns}")
+                    logger.info(f"Detected technologies for {tech}: {technologies}")
+
+                technologies = list(set(technologies))
+                logger.info(f"Final unique technologies: {technologies}")
+
+                await browser.close()
+                logger.info(f"Browser closed for {url}")
+                return {"url": url, "technologies": technologies, "error": None}
+
+        except Exception as e:
+            logger.error(f"Attempt {attempt + 1} failed for {url}: {str(e)}")
+            if attempt == max_retries - 1:
+                return {"url": url, "technologies": [], "error": str(e)}
+            await asyncio.sleep(1)  # Wait before retry
+
+async def detect_technologies_with_checkout(url: str) -> DetectionResponse:
+    """Detect technologies on the main URL and potential checkout pages concurrently."""
+    logger.info(f"Processing URL with checkout detection: {url}")
+
+    # Get potential checkout URLs from sitemap
+    checkout_urls = await find_checkout_urls(url)
+    checkout_urls = [u for u in checkout_urls if u.startswith(("http://", "https://"))]
+    if not checkout_urls:
+        logger.info("No checkout URLs found in sitemap, trying link analysis")
+
+        # Fallback to link analysis on homepage
         async with async_playwright() as p:
-            logger.info("Launching Playwright Chromium browser")  # Logger 2
-            # Launch browser with stealth settings
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-infobars",
-                    "--window-size=1920,1080",
-                ],
-            )
+            browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                proxy={
+                    "server": "http://YOUR_BRIGHTDATA_HOST:YOUR_BRIGHTDATA_PORT",
+                    "username": "YOUR_BRIGHTDATA_USERNAME",
+                    "password": "YOUR_BRIGHTDATA_PASSWORD",
+                },
+                user_agent=ua.random,
+                extra_http_headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                },
             )
             await stealth_async(context)
             page = await context.new_page()
 
-            # Navigate to URL
-            logger.info(f"Navigating to {url}")  # Logger 3
-            response = await page.goto(url, timeout=30000, wait_until="domcontentloaded")
-            if not response or response.status >= 400:
-                raise Exception(f"Failed to load URL: {response.status if response else 'No response'}")
-            logger.info(f"Page loaded successfully with status: {response.status}")  # Logger 4
+            try:
+                await page.goto(url, timeout=30000, wait_until="networkidle")
+                links = await page.locator("a, button, input[type='submit']").all()
+                checkout_urls = [
+                    await link.get_attribute("href") or await link.evaluate("el => el.form?.action")
+                    for link in links
+                    if await link.inner_text() and re.search(
+                        r"buy|pricing|subscribe|checkout|cart|order|payment",
+                        (await link.inner_text()).lower(),
+                        re.IGNORECASE
+                    )
+                ]
+                checkout_urls = [u for u in checkout_urls if u and u.startswith(("http://", "https://"))]
+                logger.info(f"Found {len(checkout_urls)} checkout URLs via link analysis: {checkout_urls}")
+                await browser.close()
+            except Exception as e:
+                logger.error(f"Error in link analysis for {url}: {str(e)}")
+                await browser.close()
 
-            # Get page content
-            logger.info("Extracting page content")  # Logger 5
-            html = await page.content()
-            soup = BeautifulSoup(html, "html.parser")
+    # Add original URL to check
+    all_urls = [url] + checkout_urls[:3]  # Limit to 3 checkout URLs for speed
+    logger.info(f"Checking technologies on {len(all_urls)} URLs: {all_urls}")
 
-            # Extract script sources
-            logger.info("Extracting script sources")  # Logger 6
-            script_urls = [
-                script.get("src", "") for script in soup.find_all("script") if script.get("src")
-            ]
-            logger.info(f"Found {len(script_urls)} script URLs: {script_urls}")  # Logger 7
+    # Run detection concurrently
+    results = await asyncio.gather(
+        *[detect_technologies(u) for u in all_urls],
+        return_exceptions=True
+    )
 
-            # Extract inline scripts
-            logger.info("Extracting inline scripts")  # Logger 8
-            inline_scripts = [
-                script.string for script in soup.find_all("script") if script.string
-            ]
-            logger.info(f"Found {len(inline_scripts)} inline scripts")  # Logger 9
-
-            # Extract data attributes
-            logger.info("Extracting data attributes")  # Logger 10
-            data_attrs = [
-                attr for elem in soup.find_all(True) for attr in elem.attrs if attr.startswith("data-")
-            ]
-            logger.info(f"Found {len(data_attrs)} data attributes: {data_attrs}")  # Logger 11
-
-            # Evaluate JavaScript globals in browser context
-            logger.info("Evaluating JavaScript globals")  # Logger 12
-            js_globals = await page.evaluate("""
-                () => {
-                    return {
-                        hasStripe: typeof Stripe !== 'undefined',
-                        hasPayPal: typeof paypal !== 'undefined',
-                        hasRazorpay: typeof Razorpay !== 'undefined',
-                        hasBraintree: typeof braintree !== 'undefined',
-                        hasAdyen: typeof AdyenCheckout !== 'undefined',
-                        hasAuthorizeNet: typeof Accept !== 'undefined',
-                        hasSquare: typeof Square !== 'undefined',
-                        hasKlarna: typeof Klarna !== 'undefined',
-                        hasCheckoutCom: typeof Checkout !== 'undefined',
-                        hasPaytm: typeof Paytm !== 'undefined',
-                        hasShopifyPayments: typeof Shopify !== 'undefined',
-                        hasWorldpay: typeof Worldpay !== 'undefined',
-                        has2Checkout: typeof TwoCheckout !== 'undefined',
-                        hasAmazonPay: typeof amazon !== 'undefined',
-                        hasApplePay: typeof ApplePaySession !== 'undefined',
-                        hasGooglePay: typeof window.google === 'undefined' ? false : typeof google.payments?.api !== 'undefined',
-                        hasMollie: typeof Mollie !== 'undefined',
-                        hasOpayo: typeof Opayo !== 'undefined',
-                        hasPaddle: typeof Paddle !== 'undefined',
-                        hasShopify: typeof Shopify !== 'undefined',
-                    };
-                }
-            """)
-            logger.info(f"JavaScript globals evaluation result: {js_globals}")  # Logger 13
-
-            # Combine all content to scan
-            logger.info("Combining content for pattern matching")  # Logger 14
-            all_content = (
-                html + " ".join(script_urls) + " ".join(inline_scripts) + " ".join(data_attrs)
-            )
-            logger.info(f"Total content length: {len(all_content)} characters")  # Logger 15
-
-            # Scan for technologies
-            logger.info("Scanning for technologies")  # Logger 16
-            matched_patterns = []
-            for tech, patterns in TECH_PATTERNS.items():
-                if any(pattern.search(all_content) for pattern in patterns):
-                    technologies.append(tech)
-                # Additional JS global checks
-                if tech == "Stripe" and js_globals.get("hasStripe"):
-                    technologies.append(tech)
-                elif tech == "PayPal" and js_globals.get("hasPayPal"):
-                    technologies.append(tech)
-                elif tech == "Razorpay" and js_globals.get("hasRazorpay"):
-                    technologies.append(tech)
-                elif tech == "Braintree" and js_globals.get("hasBraintree"):
-                    technologies.append(tech)
-                elif tech == "Adyen" and js_globals.get("hasAdyen"):
-                    technologies.append(tech)
-                elif tech == "Authorize.Net" and js_globals.get("hasAuthorizeNet"):
-                    technologies.append(tech)
-                elif tech == "Square" and js_globals.get("hasSquare"):
-                    technologies.append(tech)
-                elif tech == "Klarna" and js_globals.get("hasKlarna"):
-                    technologies.append(tech)
-                elif tech == "Checkout.com" and js_globals.get("hasCheckoutCom"):
-                    technologies.append(tech)
-                elif tech == "Paytm" and js_globals.get("hasPaytm"):
-                    technologies.append(tech)
-                elif tech == "Shopify Payments" and js_globals.get("hasShopifyPayments"):
-                    technologies.append(tech)
-                elif tech == "Worldpay" and js_globals.get("hasWorldpay"):
-                    technologies.append(tech)
-                elif tech == "2Checkout" and js_globals.get("has2Checkout"):
-                    technologies.append(tech)
-                elif tech == "Amazon Pay" and js_globals.get("hasAmazonPay"):
-                    technologies.append(tech)
-                elif tech == "Apple Pay" and js_globals.get("hasApplePay"):
-                    technologies.append(tech)
-                elif tech == "Google Pay" and js_globals.get("hasGooglePay"):
-                    technologies.append(tech)
-                elif tech == "Mollie" and js_globals.get("hasMollie"):
-                    technologies.append(tech)
-                elif tech == "Opayo" and js_globals.get("hasOpayo"):
-                    technologies.append(tech)
-                elif tech == "Paddle" and js_globals.get("hasPaddle"):
-                    technologies.append(tech)
-                elif tech == "Shopify" and js_globals.get("hasShopify"):
-                    technologies.append(tech)
-                logger.info(f"Matched patterns: {matched_patterns}")  # Logger 17
-                logger.info(f"Detected technologies: {technologies}")  # Logger 18
-
-            # Remove duplicates
-            technologies = list(set(technologies))
-            logger.info(f"Final unique technologies: {technologies}")  # Logger 19
-
-            await browser.close()
-            logger.info(f"Browser closed for {url}")  # Logger 20
-            return {"url": url, "technologies": technologies, "error": None}
-            
-    except Exception as e:
-        logger.error(f"Error processing {url}: {str(e)}")  # Logger 21
-        logger.error(f"Error processing {url}: {str(e)}")
-        return {"url": url, "technologies": [], "error": str(e)}
+    # Aggregate results
+    for result in results:
+        if isinstance(result, dict) and result["technologies"]:
+            logger.info(f"Technologies found on {result['url']}: {result['technologies']}")
+            return DetectionResponse(**result)
+    
+    # Return result from original URL if no technologies found
+    logger.info("No technologies found on any URLs, returning original URL result")
+    return DetectionResponse(**results[0]) if isinstance(results[0], dict) else DetectionResponse(url=url, technologies=[], error="No technologies detected")
 
 @app.get("/gatecheck/", response_model=DetectionResponse)
 async def gatecheck(url: str):
@@ -566,27 +692,24 @@ async def gatecheck(url: str):
     API endpoint to detect payment gateways and e-commerce platforms.
     Example: /gatecheck/?url=https://example.com
     """
-    # Validate URL
-    logger.info(f"Received gatecheck request for URL: {url}")  # Logger 22
+    logger.info(f"Received gatecheck request for URL: {url}")
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-        logger.info(f"Added https:// to URL: {url}")  # Logger 23
+        logger.info(f"Added https:// to URL: {url}")
     parsed_url = urlparse(url)
-    logger.info(f"Parsed URL: scheme={parsed_url.scheme}, netloc={parsed_url.netloc}")  # Logger 24
+    logger.info(f"Parsed URL: scheme={parsed_url.scheme}, netloc={parsed_url.netloc}")
     if not parsed_url.scheme or not parsed_url.netloc:
-        logger.warning(f"Invalid URL provided: {url}")  # Logger 25
+        logger.warning(f"Invalid URL provided: {url}")
         raise HTTPException(status_code=400, detail="Invalid URL provided")
 
-    # Run detection
-    result = await detect_technologies(url)
-    logger.info(f"Gatecheck result for {url}: {result}")  # Logger 26
-    return DetectionResponse(**result)
+    result = await detect_technologies_with_checkout(url)
+    logger.info(f"Gatecheck result for {url}: {result}")
+    return result
+
 @app.get("/")
 async def root():
-    logger.info("Received request to root endpoint")  # Logger 27
+    logger.info("Received request to root endpoint")
     return {"message": "Welcome to the Payment Gateway & E-Commerce Detector API. Use /gatecheck/?url=<your_url> to detect technologies."}
-
-from fastapi.responses import FileResponse
 
 @app.get("/favicon.ico")
 async def favicon():
@@ -599,6 +722,6 @@ async def favicon():
     return Response(status_code=204)
 
 if __name__ == "__main__":
-    logger.info("Starting Uvicorn server locally")  # Logger 31
+    logger.info("Starting Uvicorn server locally")
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

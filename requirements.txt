@@ -5,3 +5,4 @@ playwright-stealth==1.0.6
 beautifulsoup4==4.12.3
 pydantic==2.9.2
 blinker==1.7.0
+setuptools==75.1.0

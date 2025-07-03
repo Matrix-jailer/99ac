@@ -417,7 +417,6 @@ async def detect_technologies(url: str) -> Dict[str, List[str]]:
                 viewport={"width": 1920, "height": 1080},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             )
-            # Apply stealth to evade bot detection
             await stealth_async(context)
             page = await context.new_page()
 
@@ -464,7 +463,7 @@ async def detect_technologies(url: str) -> Dict[str, List[str]]:
                         has2Checkout: typeof TwoCheckout !== 'undefined',
                         hasAmazonPay: typeof amazon !== 'undefined',
                         hasApplePay: typeof ApplePaySession !== 'undefined',
-                        hasGooglePay: typeof google?.payments?.api !== 'undefined',
+                        hasGooglePay: typeof window.google === 'undefined' ? false : typeof google.payments?.api !== 'undefined',
                         hasMollie: typeof Mollie !== 'undefined',
                         hasOpayo: typeof Opayo !== 'undefined',
                         hasPaddle: typeof Paddle !== 'undefined',
@@ -550,6 +549,16 @@ async def gatecheck(url: str):
     # Run detection
     result = await detect_technologies(url)
     return DetectionResponse(**result)
+@app.get("/")
+async def root():
+    return {"message": "Welcome to the Payment Gateway & E-Commerce Detector API. Use /gatecheck/?url=<your_url> to detect technologies."}
+
+from fastapi.responses import FileResponse
+
+@app.get("/favicon.ico")
+async def favicon():
+    # Return an empty response or a favicon file if you have one
+    return FileResponse("path/to/favicon.ico") if os.path.exists("path/to/favicon.ico") else {}
 
 if __name__ == "__main__":
     import uvicorn

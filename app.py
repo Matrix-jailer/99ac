@@ -465,6 +465,7 @@ async def detect_technologies(url: str, max_retries: int = 2) -> Dict[str, List[
                     },
                 )
                 await stealth_async(context)
+                page = await context.new_page()
                 await page.evaluate("""
                     () => {
                         const originalGetContext = HTMLCanvasElement.prototype.getContext;
@@ -478,7 +479,6 @@ async def detect_technologies(url: str, max_retries: int = 2) -> Dict[str, List[
                         };
                     }
                 """)
-                page = await context.new_page()
 
                 # Human-like navigation
                 logger.info(f"Navigating to {url}")
@@ -675,6 +675,7 @@ async def detect_technologies_with_checkout(url: str) -> DetectionResponse:
                 },
             )
             await stealth_async(context)
+            page = await context.new_page()
             await page.evaluate("""
                 () => {
                     const originalGetContext = HTMLCanvasElement.prototype.getContext;
@@ -688,7 +689,6 @@ async def detect_technologies_with_checkout(url: str) -> DetectionResponse:
                     };
                 }
             """)
-            page = await context.new_page()
 
             try:
                 await page.goto(url, timeout=45000, wait_until="networkidle")
@@ -728,7 +728,7 @@ async def detect_technologies_with_checkout(url: str) -> DetectionResponse:
     # Return result from original URL if no technologies found
     logger.info("No technologies found on any URLs, returning original URL result")
     return DetectionResponse(**results[0]) if isinstance(results[0], dict) else DetectionResponse(url=url, technologies=[], error="No technologies detected")
-
+    
 @app.get("/gatecheck/", response_model=DetectionResponse)
 async def gatecheck(url: str):
     """

@@ -4,5 +4,8 @@ playwright==1.48.0
 playwright-stealth==1.0.6
 beautifulsoup4==4.12.3
 pydantic==2.9.2
+setuptools==75.1.0
+requests==2.32.3
+fake-useragent==1.5.1
 blinker==1.7.0
 setuptools==75.1.0

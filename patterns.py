@@ -1,7 +1,3 @@
-import re
-matched_patterns = []
-
-
 TECH_PATTERNS = {
     "Stripe": [
         re.compile(r"js\.stripe\.com", re.IGNORECASE),

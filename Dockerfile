@@ -2,7 +2,7 @@
 FROM python:3.12-slim
 
 # Set working directory
-WORKDIR /app
+WORKDIR /main
 
 # Copy requirements.txt
 COPY requirements.txt .
@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y \
     && playwright install --with-deps chromium
 
 # Copy the application code
-COPY app.py .
+COPY main.py .
 
 # Expose the FastAPI port
 EXPOSE 8000

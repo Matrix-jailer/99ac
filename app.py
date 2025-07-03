@@ -432,31 +432,21 @@ async def detect_technologies(url: str, max_retries: int = 2) -> Dict[str, List[
         try:
             async with async_playwright() as p:
                 logger.info(f"Attempt {attempt + 1}: Launching Playwright Chromium browser")
-                browser = await p.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-infobars",
-                        "--window-size=1920,1080",
-                    ],
-                )
-                # Configure Bright Data residential proxy (add credentials later)
+                browser = await p.chromium.launch(headless=True)
                 context = await browser.new_context(
                     proxy={
-                        "server": "http://brd.superproxy.io:3333",  # e.g., "http://zproxy.lum-superproxy.io:22225"
-                        "username": "brd-customer-hl_55395c6c-zone-residential_proxy2",
-                        "password": "q98c7nkfwok4",
+                        "server": "http://YOUR_BRIGHTDATA_HOST:YOUR_BRIGHTDATA_PORT",
+                        "username": "YOUR_BRIGHTDATA_USERNAME",
+                        "password": "YOUR_BRIGHTDATA_PASSWORD",
                     },
-                    viewport={"width": 1920, "height": 1080},
-                    user_agent=ua.random,  # Randomize user agent
+                    user_agent=ua.random,
                     extra_http_headers={
                         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
                         "Accept-Language": "en-US,en;q=0.5",
                         "Accept-Encoding": "gzip, deflate, br",
                         "Connection": "keep-alive",
                         "Upgrade-Insecure-Requests": "1",
-                    },  # Mimic browser headers
+                    },
                 )
                 await stealth_async(context)
                 page = await context.new_page()
@@ -628,13 +618,11 @@ async def detect_technologies_with_checkout(url: str) -> DetectionResponse:
 
         # Fallback to link analysis on homepage
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.connect_over_cdp(
+                "wss://brd-customer-YOUR_CUSTOMER_ID-zone-YOUR_ZONE_NAME:YOUR_ZONE_PASSWORD@brd.superproxy.io:9222"
+            )
             context = await browser.new_context(
-                proxy={
-                    "server": "http://YOUR_BRIGHTDATA_HOST:YOUR_BRIGHTDATA_PORT",
-                    "username": "YOUR_BRIGHTDATA_USERNAME",
-                    "password": "YOUR_BRIGHTDATA_PASSWORD",
-                },
+                viewport={"width": 1920, "height": 1080},
                 user_agent=ua.random,
                 extra_http_headers={
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",

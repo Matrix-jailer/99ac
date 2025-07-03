@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y \
     && playwright install --with-deps chromium
 
 # Copy the application code
-COPY main.py .
+COPY app.py .
 
 # Expose the FastAPI port
 EXPOSE 8000
@@ -36,4 +36,4 @@ EXPOSE 8000
 ENV PORT=8000
 
 # Start the app with Uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

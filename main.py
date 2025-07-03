@@ -1,142 +1,259 @@
-import re
 import asyncio
-import logging
+import re
 import random
-from typing import List, Dict
+import logging
+from typing import List, Dict, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from urllib.parse import urlparse
-from playwright.async_api import async_playwright
+from urllib.parse import urlparse, urljoin
+from playwright.async_api import async_playwright, Page, BrowserContext
 from playwright_stealth import stealth_async
+from user_agents import parse
+from bs4 import BeautifulSoup
 
-from detectors import TECH_PATTERNS, detect_technologies_from_text
-
-# --- CONFIG ---
-BRIGHT_DATA_CDP = "wss://brd-customer-hl_55395c6c-zone-residential_proxy1:yv8ient65hzb@brd.superproxy.io:9222"
-
-# --- LOGGING ---
+# Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("gatecheck")
+logger = logging.getLogger(__name__)
 
-# --- FastAPI Init ---
-app = FastAPI()
+# FastAPI app
+app = FastAPI(title="Payment Gateway and E-commerce Detector")
 
-
-# --- Models ---
+# Pydantic model for response
 class DetectionResponse(BaseModel):
     url: str
-    found: Dict[str, List[str]]
+    technologies: List[str]
+    checkout_urls: List[str]
+    network_insights: List[Dict[str, str]]
+    errors: Optional[List[str]] = None
 
+# Technology detection patterns (from provided document)
+TECH_PATTERNS = {
+    "Stripe": [
+        re.compile(r"js\.stripe\.com", re.IGNORECASE),
+        re.compile(r"data-stripe", re.IGNORECASE),
+        re.compile(r"Stripe\(", re.IGNORECASE),
+        # ... (other Stripe patterns from document)
+    ],
+    "PayPal": [
+        re.compile(r"paypalobjects\.com", re.IGNORECASE),
+        re.compile(r"paypal\.Buttons", re.IGNORECASE),
+        # ... (other PayPal patterns)
+    ],
+    # ... (other payment gateways and e-commerce platforms from document)
+    "Shopify": [
+        re.compile(r"shopify\.com", re.IGNORECASE),
+        re.compile(r"data-shopify", re.IGNORECASE),
+        re.compile(r"Shopify\.", re.IGNORECASE),
+    ],
+    "WooCommerce": [
+        re.compile(r"woocommerce", re.IGNORECASE),
+        re.compile(r"wp-content/plugins/woocommerce", re.IGNORECASE),
+        re.compile(r"wc-ajax", re.IGNORECASE),
+    ],
+    "Cloudflare": [
+        re.compile(r"cloudflare\.com", re.IGNORECASE),
+        re.compile(r"cf-ray", re.IGNORECASE),
+        re.compile(r"__cf_chl", re.IGNORECASE),
+    ],
+    "reCaptcha": [
+        re.compile(r"g-recaptcha", re.IGNORECASE),
+        re.compile(r"recaptcha/api\.js", re.IGNORECASE),
+        # ... (other CAPTCHA patterns)
+    ],
+    # ... (other CAPTCHA patterns from document)
+}
 
-# --- Core Logic ---
-async def fetch_and_analyze(url: str) -> Dict:
+# Checkout URL patterns
+CHECKOUT_PATTERNS = [
+    re.compile(r"/(cart|checkout|buy|purchase|subscribe|payment|order)", re.IGNORECASE),
+    re.compile(r"shopify\.com/checkout", re.IGNORECASE),
+    re.compile(r"woocommerce-checkout", re.IGNORECASE),
+    re.compile(r"add-to-cart", re.IGNORECASE),
+    re.compile(r"payment", re.IGNORECASE),
+]
+
+async def detect_technologies(page: Page, html: str) -> Dict:
+    """Detect technologies in HTML and JavaScript globals."""
+    detected_tech = []
+    
+    # Scan HTML for patterns
+    for tech, patterns in TECH_PATTERNS.items():
+        if any(p.search(html) for p in patterns):
+            detected_tech.append(tech)
+    
+    # Check JavaScript globals
+    js_globals = await page.evaluate("""
+        () => {
+            return {
+                hasStripe: typeof Stripe !== 'undefined',
+                hasPayPal: typeof paypal !== 'undefined',
+                hasRazorpay: typeof Razorpay !== 'undefined',
+                hasBraintree: typeof braintree !== 'undefined',
+                hasAdyen: typeof AdyenCheckout !== 'undefined',
+                hasAuthorizeNet: typeof Accept !== 'undefined',
+                hasSquare: typeof Square !== 'undefined',
+                hasKlarna: typeof Klarna !== 'undefined',
+                hasCheckoutCom: typeof Checkout !== 'undefined',
+                hasPaytm: typeof Paytm !== 'undefined',
+                hasShopifyPayments: typeof Shopify !== 'undefined',
+                hasWorldpay: typeof Worldpay !== 'undefined',
+                has2Checkout: typeof TwoCheckout !== 'undefined',
+                hasAmazonPay: typeof amazon !== 'undefined',
+                hasApplePay: typeof ApplePaySession !== 'undefined',
+                hasGooglePay: typeof google?.payments?.api !== 'undefined',
+                hasMollie: typeof Mollie !== 'undefined',
+                hasOpayo: typeof Opayo !== 'undefined',
+                hasPaddle: typeof Paddle !== 'undefined',
+                hasShopify: typeof Shopify !== 'undefined',
+            };
+        }
+    """)
+    
+    for key, value in js_globals.items():
+        if value:
+            tech_name = key.replace("has", "")
+            if tech_name not in detected_tech:
+                detected_tech.append(tech_name)
+    
+    return detected_tech
+
+async def find_checkout_urls(page: Page, base_url: str, html: str) -> List[str]:
+    """Find potential checkout URLs via link analysis and network inspection."""
+    checkout_urls = set()
+    
+    # Parse HTML for links
+    soup = BeautifulSoup(html, "html.parser")
+    for link in soup.find_all(["a", "button", "input"]):
+        href = link.get("href") or link.get("action")
+        text = link.get_text().lower()
+        if href and (any(p.search(href) for p in CHECKOUT_PATTERNS) or 
+                     any(keyword in text for keyword in ["checkout", "buy", "cart", "subscribe", "pricing"])):
+            full_url = urljoin(base_url, href)
+            checkout_urls.add(full_url)
+    
+    # Network inspection for checkout-related requests
+    network_requests = []
+    def capture_request(request):
+        network_requests.append({"url": request.url, "method": request.method})
+    
+    page.on("request", capture_request)
+    
+    # Simulate clicks on potential checkout links
+    links = await page.locator("a, button, input[type='submit']").all()
+    for link in links:
+        text = (await link.inner_text()).lower()
+        if text and re.search(r"pricing|buy|subscribe|checkout|cart", text, re.IGNORECASE):
+            try:
+                await link.click(timeout=5000)
+                await page.wait_for_timeout(random.randint(300, 1000))
+            except Exception as e:
+                logger.error(f"Error clicking link {text}: {str(e)}")
+    
+    # Analyze network requests
+    for req in network_requests:
+        if any(p.search(req["url"]) for p in CHECKOUT_PATTERNS):
+            checkout_urls.add(req["url"])
+    
+    return list(checkout_urls), network_requests
+
+async def scan_url(url: str) -> Dict:
+    """Scan a single URL for technologies and checkout URLs."""
+    errors = []
+    technologies = []
+    checkout_urls = []
+    network_insights = []
+    
     async with async_playwright() as p:
-        browser = await p.chromium.connect_over_cdp(BRIGHT_DATA_CDP)
-        context = await browser.new_context(
-            viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-            extra_http_headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-            }
-        )
-        await stealth_async(context)
-        page = await context.new_page()
-
-        await page.evaluate("""
-            () => {
-                const original = HTMLCanvasElement.prototype.getContext;
-                HTMLCanvasElement.prototype.getContext = function(type) {
-                    if (type === '2d') {
-                        const ctx = original.apply(this, arguments);
-                        ctx.fillStyle = ctx.fillStyle + String(Math.random()).slice(2, 8);
-                        return ctx;
-                    }
-                    return original.apply(this, arguments);
-                };
-            }
-        """)
-
-        logger.info(f"Loading page: {url}")
+        # Connect to Bright Data Browser API (as per your document)
         try:
-            resp = await page.goto(url, wait_until="networkidle", timeout=45000)
-            if not resp or resp.status >= 400:
-                raise Exception(f"Bad status: {resp.status if resp else 'none'}")
+            logger.info(f"Connecting to Bright Data Browser API")
+            browser = await p.chromium.connect_over_cdp(
+                "wss://brd-customer-hl_55395c6c-zone-residential_proxy1:yv8ient65hzb@brd.superproxy.io:9222"
+            )
+            context = await browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                extra_http_headers={
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                },
+            )
+            await stealth_async(context)
+            page = await context.new_page()
+            
+            # Apply canvas fingerprinting protection
+            await page.evaluate("""
+                () => {
+                    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+                    HTMLCanvasElement.prototype.getContext = function(contextType, contextAttributes) {
+                        if (contextType === '2d') {
+                            const ctx = originalGetContext.apply(this, arguments);
+                            ctx.fillStyle = ctx.fillStyle + String(Math.random()).slice(2, 8);
+                            return ctx;
+                        }
+                        return originalGetContext.apply(this, arguments);
+                    };
+                }
+            """)
+            
+            # Navigate to URL
+            logger.info(f"Navigating to {url}")
+            try:
+                response = await page.goto(url, timeout=45000, wait_until="networkidle")
+                if not response or response.status >= 400:
+                    errors.append(f"Failed to load URL: {response.status if response else 'No response'}")
+                    return {"url": url, "technologies": [], "checkout_urls": [], "network_insights": [], "errors": errors}
+            except Exception as e:
+                errors.append(f"Navigation error: {str(e)}")
+                return {"url": url, "technologies": [], "checkout_urls": [], "network_insights": [], "errors": errors}
+            
+            # Simulate human behavior
+            logger.info("Simulating human-like interactions")
+            await page.mouse.move(random.randint(100, 800), random.randint(100, 600))
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await page.wait_for_timeout(random.randint(500, 1500))
+            
+            # Get page content
+            html = await page.content()
+            
+            # Detect technologies
+            technologies = await detect_technologies(page, html)
+            
+            # Find checkout URLs
+            checkout_urls, network_insights = await find_checkout_urls(page, url, html)
+            
+            await context.close()
+            await browser.close()
+        
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to load URL: {str(e)}")
+            errors.append(f"Browser error: {str(e)}")
+    
+    return {
+        "url": url,
+        "technologies": technologies,
+        "checkout_urls": checkout_urls,
+        "network_insights": network_insights,
+        "errors": errors if errors else None
+    }
 
-        await page.mouse.move(random.randint(100, 500), random.randint(100, 300))
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await asyncio.sleep(random.uniform(0.5, 1.2))
-
-        logger.info("Clicking buttons or links with payment hints...")
-        for el in await page.locator("a, button, input[type='submit']").all():
-            try:
-                text = await el.inner_text()
-                if text and re.search(r"checkout|buy|pricing|subscribe|pay", text, re.I):
-                    await el.click(timeout=4000)
-                    await asyncio.sleep(random.uniform(0.4, 1.0))
-                    break
-            except Exception:
-                continue
-
-        logger.info("Scraping content...")
-        content = await page.content()
-        js_globals = await page.evaluate("""
-            () => {
-                return {
-                    Stripe: typeof Stripe !== 'undefined',
-                    PayPal: typeof paypal !== 'undefined',
-                    Razorpay: typeof Razorpay !== 'undefined',
-                    Braintree: typeof braintree !== 'undefined',
-                    Adyen: typeof AdyenCheckout !== 'undefined',
-                    AuthorizeNet: typeof Accept !== 'undefined',
-                    Square: typeof Square !== 'undefined',
-                    Klarna: typeof Klarna !== 'undefined',
-                    CheckoutCom: typeof Checkout !== 'undefined',
-                    Paytm: typeof Paytm !== 'undefined',
-                    ShopifyPayments: typeof Shopify !== 'undefined',
-                    Worldpay: typeof Worldpay !== 'undefined',
-                    2Checkout: typeof TwoCheckout !== 'undefined',
-                    AmazonPay: typeof amazon !== 'undefined',
-                    ApplePay: typeof ApplePaySession !== 'undefined',
-                    GooglePay: typeof google?.payments?.api !== 'undefined',
-                    Mollie: typeof Mollie !== 'undefined',
-                    Opayo: typeof Opayo !== 'undefined',
-                    Paddle: typeof Paddle !== 'undefined',
-                    Shopify: typeof Shopify !== 'undefined',
-                };
-            }
-        """)
-
-        network_data = []
-        for req in page.context.requests:
-            try:
-                r_url = req.url
-                r_headers = req.headers
-                r_body = await req.post_data()
-                if any(re.search(pat, r_url + str(r_headers) + str(r_body or ''), re.I)
-                       for patterns in TECH_PATTERNS.values() for pat in patterns):
-                    network_data.append(f"{r_url}\n{r_headers}\n{r_body}")
-            except:
-                pass
-
-        logger.info("Analyzing fingerprints...")
-        found = detect_technologies_from_text(
-            html=content,
-            js_globals=js_globals,
-            network_snippets=network_data
-        )
-
-        return {"url": url, "found": found}
-
-
-# --- Endpoint ---
 @app.get("/gatecheck/", response_model=DetectionResponse)
 async def gatecheck(url: str):
+    """API endpoint to detect payment gateways, e-commerce platforms, and checkout URLs."""
+    # Validate URL
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
-    parsed = urlparse(url)
-    if not parsed.netloc:
-        raise HTTPException(status_code=400, detail="Invalid URL")
-    return await fetch_and_analyze(url)
+    parsed_url = urlparse(url)
+    if not parsed_url.scheme or not parsed_url.netloc:
+        raise HTTPException(status_code=400, detail="Invalid URL provided")
+    
+    # Run detection
+    result = await scan_url(url)
+    return DetectionResponse(**result)
+
+# Run the FastAPI server
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

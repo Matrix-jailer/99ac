@@ -85,9 +85,26 @@ async def fetch_and_analyze(url: str) -> Dict:
         js_globals = await page.evaluate("""
             () => {
                 return {
-                    Stripe: typeof Stripe !== "undefined",
-                    PayPal: typeof paypal !== "undefined",
-                    Razorpay: typeof Razorpay !== "undefined"
+                    Stripe: typeof Stripe !== 'undefined',
+                    PayPal: typeof paypal !== 'undefined',
+                    Razorpay: typeof Razorpay !== 'undefined',
+                    Braintree: typeof braintree !== 'undefined',
+                    Adyen: typeof AdyenCheckout !== 'undefined',
+                    AuthorizeNet: typeof Accept !== 'undefined',
+                    Square: typeof Square !== 'undefined',
+                    Klarna: typeof Klarna !== 'undefined',
+                    CheckoutCom: typeof Checkout !== 'undefined',
+                    Paytm: typeof Paytm !== 'undefined',
+                    ShopifyPayments: typeof Shopify !== 'undefined',
+                    Worldpay: typeof Worldpay !== 'undefined',
+                    2Checkout: typeof TwoCheckout !== 'undefined',
+                    AmazonPay: typeof amazon !== 'undefined',
+                    ApplePay: typeof ApplePaySession !== 'undefined',
+                    GooglePay: typeof google?.payments?.api !== 'undefined',
+                    Mollie: typeof Mollie !== 'undefined',
+                    Opayo: typeof Opayo !== 'undefined',
+                    Paddle: typeof Paddle !== 'undefined',
+                    Shopify: typeof Shopify !== 'undefined',
                 };
             }
         """)

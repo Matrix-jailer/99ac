@@ -1,6 +1,7 @@
 import os
 import asyncio
 import re
+from fastapi.responses import FileResponse, Response  # Add Response here
 from typing import List, Dict, Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -589,12 +590,12 @@ from fastapi.responses import FileResponse
 
 @app.get("/favicon.ico")
 async def favicon():
-    logger.info("Received request for favicon.ico")  # Logger 28
+    logger.info("Received request for favicon.ico")
     favicon_path = "favicon.ico"
     if os.path.exists(favicon_path):
-        logger.info(f"Serving favicon from {favicon_path}")  # Logger 29
+        logger.info(f"Serving favicon from {favicon_path}")
         return FileResponse(favicon_path)
-    logger.info("No favicon found, returning 204 No Content")  # Logger 30
+    logger.info("No favicon found, returning 204 No Content")
     return Response(status_code=204)
 
 if __name__ == "__main__":

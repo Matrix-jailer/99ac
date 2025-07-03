@@ -408,21 +408,39 @@ class DetectionResponse(BaseModel):
     error: Optional[str] = None
 
 async def find_checkout_urls(base_url: str) -> List[str]:
-    """Parse sitemap.xml and extract potential checkout/product URLs."""
+    """Parse sitemap.xml, sitemap_index.xml, or robots.txt to extract potential checkout/product URLs."""
     logger.info(f"Fetching sitemap for {base_url}")
-    try:
-        response = requests.get(f"{base_url}/sitemap.xml", timeout=10)
-        response.raise_for_status()
-        root = ET.fromstring(response.content)
-        checkout_urls = [
-            loc.text for loc in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
-            if re.search(r"/(order|checkout|pricing|buy|subscribe|cart|payment)/", loc.text, re.IGNORECASE)
-        ]
-        logger.info(f"Found {len(checkout_urls)} potential checkout URLs: {checkout_urls}")
-        return checkout_urls
-    except Exception as e:
-        logger.error(f"Error fetching sitemap for {base_url}: {str(e)}")
-        return []
+    sitemap_urls = [f"{base_url}/sitemap.xml", f"{base_url}/sitemap_index.xml"]
+    checkout_urls = []
+    for sitemap_url in sitemap_urls:
+        try:
+            response = requests.get(sitemap_url, timeout=10)
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+            checkout_urls.extend([
+                loc.text for loc in root.findall(".//{http://www.sitemaps.org/schemas/sitemap/0.9}loc")
+                if re.search(r"/(order|checkout|pricing|buy|subscribe|cart|payment)/", loc.text, re.IGNORECASE)
+            ])
+            logger.info(f"Found {len(checkout_urls)} potential checkout URLs in {sitemap_url}: {checkout_urls}")
+            if checkout_urls:
+                break
+        except Exception as e:
+            logger.error(f"Error fetching sitemap {sitemap_url}: {str(e)}")
+    
+    if not checkout_urls:
+        try:
+            response = requests.get(f"{base_url}/robots.txt", timeout=10)
+            response.raise_for_status()
+            checkout_urls = [
+                line.split(" ")[-1] for line in response.text.splitlines()
+                if "Disallow" in line and re.search(r"/(order|checkout|pricing|buy|subscribe|cart|payment)/", line, re.IGNORECASE)
+            ]
+            checkout_urls = [u if u.startswith(("http://", "https://")) else f"{base_url.rstrip('/')}/{u.lstrip('/')}" for u in checkout_urls]
+            logger.info(f"Found {len(checkout_urls)} potential checkout URLs in robots.txt: {checkout_urls}")
+        except Exception as e:
+            logger.error(f"Error fetching robots.txt for {base_url}: {str(e)}")
+    
+    return checkout_urls
 
 async def detect_technologies(url: str, max_retries: int = 2) -> Dict[str, List[str]]:
     """Detect payment gateways and e-commerce platforms with retries and human-like behavior."""
@@ -446,13 +464,25 @@ async def detect_technologies(url: str, max_retries: int = 2) -> Dict[str, List[
                         "Upgrade-Insecure-Requests": "1",
                     },
                 )
-
                 await stealth_async(context)
+                await page.evaluate("""
+                    () => {
+                        const originalGetContext = HTMLCanvasElement.prototype.getContext;
+                        HTMLCanvasElement.prototype.getContext = function(contextType, contextAttributes) {
+                            if (contextType === '2d') {
+                                const ctx = originalGetContext.apply(this, arguments);
+                                ctx.fillStyle = ctx.fillStyle + String(Math.random()).slice(2, 8);
+                                return ctx;
+                            }
+                            return originalGetContext.apply(this, arguments);
+                        };
+                    }
+                """)
                 page = await context.new_page()
 
                 # Human-like navigation
                 logger.info(f"Navigating to {url}")
-                response = await page.goto(url, timeout=30000, wait_until="networkidle")
+                response = await page.goto(url, timeout=45000, wait_until="networkidle")
                 if not response or response.status >= 400:
                     raise Exception(f"Failed to load URL: {response.status if response else 'No response'}")
                 logger.info(f"Page loaded successfully with status: {response.status}")
@@ -463,9 +493,21 @@ async def detect_technologies(url: str, max_retries: int = 2) -> Dict[str, List[
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 await page.wait_for_timeout(random.randint(500, 1500))  # Random delay
 
+                # Click potential checkout links to trigger dynamic content
+                logger.info("Attempting to click checkout-related links")
+                links = await page.locator("a, button, input[type='submit']").all()
+                for link in links:
+                    text = await link.inner_text()
+                    if text and re.search(r"pricing|buy|subscribe|checkout", text.lower(), re.IGNORECASE):
+                        try:
+                            await link.click(timeout=5000)
+                            await page.wait_for_timeout(random.randint(300, 1000))
+                            break
+                        except Exception as e:
+                            logger.error(f"Error clicking link {text}: {str(e)}")
+
                 # Check for checkout links/buttons
                 logger.info("Extracting potential checkout links/buttons")
-                links = await page.locator("a, button, input[type='submit']").all()
                 checkout_links = [
                     await link.get_attribute("href") or await link.evaluate("el => el.form?.action")
                     for link in links
@@ -603,7 +645,7 @@ async def detect_technologies(url: str, max_retries: int = 2) -> Dict[str, List[
             logger.error(f"Attempt {attempt + 1} failed for {url}: {str(e)}")
             if attempt == max_retries - 1:
                 return {"url": url, "technologies": [], "error": str(e)}
-            await asyncio.sleep(1)  # Wait before retry
+            await asyncio.sleep(2)  # Wait before retry
 
 async def detect_technologies_with_checkout(url: str) -> DetectionResponse:
     """Detect technologies on the main URL and potential checkout pages concurrently."""
@@ -617,6 +659,7 @@ async def detect_technologies_with_checkout(url: str) -> DetectionResponse:
 
         # Fallback to link analysis on homepage
         async with async_playwright() as p:
+            logger.info("Connecting to Bright Data Browser API for link analysis")
             browser = await p.chromium.connect_over_cdp(
                 "wss://brd-customer-hl_55395c6c-zone-residential_proxy1:yv8ient65hzb@brd.superproxy.io:9222"
             )
@@ -632,10 +675,23 @@ async def detect_technologies_with_checkout(url: str) -> DetectionResponse:
                 },
             )
             await stealth_async(context)
+            await page.evaluate("""
+                () => {
+                    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+                    HTMLCanvasElement.prototype.getContext = function(contextType, contextAttributes) {
+                        if (contextType === '2d') {
+                            const ctx = originalGetContext.apply(this, arguments);
+                            ctx.fillStyle = ctx.fillStyle + String(Math.random()).slice(2, 8);
+                            return ctx;
+                        }
+                        return originalGetContext.apply(this, arguments);
+                    };
+                }
+            """)
             page = await context.new_page()
 
             try:
-                await page.goto(url, timeout=30000, wait_until="networkidle")
+                await page.goto(url, timeout=45000, wait_until="networkidle")
                 links = await page.locator("a, button, input[type='submit']").all()
                 checkout_urls = [
                     await link.get_attribute("href") or await link.evaluate("el => el.form?.action")
@@ -654,7 +710,7 @@ async def detect_technologies_with_checkout(url: str) -> DetectionResponse:
                 await browser.close()
 
     # Add original URL to check
-    all_urls = [url] + checkout_urls[:3]  # Limit to 3 checkout URLs for speed
+    all_urls = [url] + checkout_urls[:2]  # Limit to 2 checkout URLs for speed
     logger.info(f"Checking technologies on {len(all_urls)} URLs: {all_urls}")
 
     # Run detection concurrently

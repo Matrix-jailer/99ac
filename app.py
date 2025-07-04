@@ -1,4 +1,3 @@
-<FILE filename="gateway_scanner.py">
 import asyncio
 import re
 import time

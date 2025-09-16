@@ -21,10 +21,19 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libcairo2 \
     libasound2 \
+    fonts-liberation \
+    fonts-dejavu-core \
+    curl \
+    wget \
+    ca-certificates \
     --no-install-recommends \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir -r requirements.txt \
-    && playwright install --with-deps chromium
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Playwright (without --with-deps to avoid missing fonts)
+RUN playwright install chromium
 
 # Copy the application code
 COPY app.py .
